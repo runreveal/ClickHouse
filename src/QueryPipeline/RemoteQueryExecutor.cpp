@@ -32,8 +32,6 @@
 #include <Columns/ColumnBLOB.h>
 
 #include <Access/AccessControl.h>
-#include <Access/User.h>
-#include <Access/Role.h>
 
 namespace ProfileEvents
 {
@@ -422,23 +420,18 @@ void RemoteQueryExecutor::sendQueryUnlocked(ClientInfo::QueryKind query_kind, As
     if (!duplicated_part_uuids.empty())
         connections->sendIgnoredPartUUIDs(duplicated_part_uuids);
 
-    // Collect all roles granted on this node and pass those to the remote node
+    // Send the currently active roles (from SET ROLE) to the remote node, so that
+    // row policies on the shard are applied for the correct role set — not all granted roles.
     std::vector<String> local_granted_roles;
     if (context->getSettingsRef()[Setting::push_external_roles_in_interserver_queries])
     {
-        auto user = context->getAccessControl().read<User>(modified_client_info.initial_user, false);
-        boost::container::flat_set<String> granted_roles;
-        if (user)
+        const auto & access_control = context->getAccessControl();
+        for (const auto & role_id : context->getCurrentRoles())
         {
-            const auto & access_control = context->getAccessControl();
-            for (const auto & e : user->granted_roles.getElements())
-            {
-                // `tryReadNames` instead of `readNames` because the original user might have a dropped role.
-                auto names = access_control.tryReadNames(e.ids);
-                granted_roles.insert(names.begin(), names.end());
-            }
+            auto name = access_control.tryReadName(role_id);
+            if (name)
+                local_granted_roles.push_back(*name);
         }
-        local_granted_roles.insert(local_granted_roles.end(), granted_roles.begin(), granted_roles.end());
     }
 
     connections->sendQuery(timeouts, query, query_id, stage, modified_client_info, true, local_granted_roles);
